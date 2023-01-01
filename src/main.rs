@@ -4,6 +4,7 @@ use anyhow::anyhow;
 use anyhow::Result;
 use argh::FromArgs;
 use gltf::Node;
+use gltf::Semantic;
 
 #[derive(FromArgs)]
 /// VRM as a Code
@@ -44,7 +45,15 @@ fn run(path: &str) -> Result<()> {
             mesh.name()
         );
         for p in mesh.primitives() {
-            println!("primitive #{}: Mode = {:?}", p.index(), p.mode());
+            println!(
+                "primitive #{}: Mode = {:?}, BB = {:?}",
+                p.index(),
+                p.mode(),
+                p.bounding_box()
+            );
+            if let Some(a) = p.get(&Semantic::Positions) {
+                println!("Positions: {:?} {:?}", a.dimensions(), a.data_type());
+            }
         }
     }
     Ok(())
