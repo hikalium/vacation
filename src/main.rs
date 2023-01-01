@@ -36,6 +36,17 @@ fn run(path: &str) -> Result<()> {
             parse_node(&node, 0)?;
         }
     }
+    for mesh in gltf.meshes() {
+        println!(
+            "Mesh #{} has {} primitives. name = {:?}",
+            mesh.index(),
+            mesh.primitives().count(),
+            mesh.name()
+        );
+        for p in mesh.primitives() {
+            println!("primitive #{}: Mode = {:?}", p.index(), p.mode());
+        }
+    }
     Ok(())
 }
 
