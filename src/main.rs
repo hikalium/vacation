@@ -27,6 +27,11 @@ fn run(path: &str) -> Result<()> {
     let file = fs::File::open(&path)?;
     let reader = io::BufReader::new(file);
     let gltf = gltf::Gltf::from_reader(reader)?;
+
+    let file = fs::File::open(&path)?;
+    let reader = io::BufReader::new(file);
+    let bin = gltf::binary::Glb::from_reader(reader)?;
+
     for scene in gltf.scenes() {
         println!(
             "Scene #{} has {} children",
@@ -53,6 +58,22 @@ fn run(path: &str) -> Result<()> {
             );
             if let Some(a) = p.get(&Semantic::Positions) {
                 println!("Positions: {:?} {:?}", a.dimensions(), a.data_type());
+                if let Some(v) = a.view() {
+                    println!(
+                        "View: len {} bytes, ofs {} bytes, stride: {:?}, name: {:?}",
+                        v.length(),
+                        v.offset(),
+                        v.stride(),
+                        v.name()
+                    );
+                    let b = v.buffer();
+                    println!(
+                        "Buf #{}: from {:?}, name {:?}",
+                        b.index(),
+                        b.source(),
+                        b.name()
+                    )
+                }
             }
         }
     }
