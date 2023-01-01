@@ -325,4 +325,5 @@ dependencies = [
  "anyhow",
  "argh",
  "gltf",
+ "gltf-json",
 ]
