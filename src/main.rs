@@ -14,13 +14,6 @@ use std::fs;
 use std::io;
 use std::mem;
 
-#[derive(Copy, Clone, Debug)]
-#[repr(C)]
-struct Vertex {
-    position: [f32; 3],
-    color: [f32; 3],
-}
-
 #[derive(FromArgs)]
 /// VRM as a Code
 struct Args {
@@ -106,7 +99,8 @@ fn run_input(path: &str) -> Result<()> {
                     data
                 };
                 println!(
-                    "    {} vertices, {} triangles in {:?}",
+                    "    primitive {}: {} vertices, {} triangles in {:?}",
+                    p.index(),
                     vertices.len(),
                     indices.len(),
                     p.bounding_box(),
@@ -118,12 +112,11 @@ fn run_input(path: &str) -> Result<()> {
 }
 
 /// Calculate bounding coordinates of a list of vertices, used for the clipping distance of the model
-fn bounding_coords(points: &[Vertex]) -> ([f32; 3], [f32; 3]) {
+fn bounding_coords(points: &[[f32; 3]]) -> ([f32; 3], [f32; 3]) {
     let mut min = [f32::MAX, f32::MAX, f32::MAX];
     let mut max = [f32::MIN, f32::MIN, f32::MIN];
 
-    for point in points {
-        let p = point.position;
+    for p in points {
         for i in 0..3 {
             min[i] = f32::min(min[i], p[i]);
             max[i] = f32::max(max[i], p[i]);
@@ -156,28 +149,9 @@ fn append_bytes<T>(bin: &mut Vec<u8>, src: &[T]) -> (u32, u32) {
     eprintln!("append_bytes: added {} bytes at ofs {}", len, ofs);
     (ofs as u32, len as u32)
 }
-fn run_output(path: &str) -> Result<()> {
-    let triangle_vertices = vec![
-        Vertex {
-            position: [0.0, 0.5, 0.0],
-            color: [1.0, 0.0, 0.0],
-        },
-        Vertex {
-            position: [-0.5, -0.5, 0.0],
-            color: [0.0, 1.0, 0.0],
-        },
-        Vertex {
-            position: [0.5, -0.5, 0.0],
-            color: [0.0, 0.0, 1.0],
-        },
-        Vertex {
-            position: [0.0, 0.0, 1.0],
-            color: [0.0, 0.0, 1.0],
-        },
-    ];
+fn write_glb(vertices: &[[f32; 3]], indices: &[[u32; 3]], path: &str) -> Result<()> {
     let mut bin = Vec::new();
-    let (bin_vertices_ofs, bin_vertices_len) = append_bytes(&mut bin, &triangle_vertices);
-    let indices: Vec<[u32; 3]> = vec![[0, 1, 2], [1, 2, 3]];
+    let (bin_vertices_ofs, bin_vertices_len) = append_bytes(&mut bin, &vertices);
     let indices = indices.flatten();
     let (bin_indices_ofs, bin_indices_len) = append_bytes(&mut bin, indices);
 
@@ -194,7 +168,7 @@ fn run_output(path: &str) -> Result<()> {
         buffer: gltf_json::Index::new(0),
         byte_length: bin_vertices_len,
         byte_offset: Some(bin_vertices_ofs),
-        byte_stride: Some(mem::size_of::<Vertex>() as u32),
+        byte_stride: None,
         extensions: Default::default(),
         extras: Default::default(),
         name: None,
@@ -211,11 +185,11 @@ fn run_output(path: &str) -> Result<()> {
         target: Some(Valid(gltf_json::buffer::Target::ArrayBuffer)),
     };
 
-    let (min, max) = bounding_coords(&triangle_vertices);
+    let (min, max) = bounding_coords(vertices);
     let positions = gltf_json::Accessor {
         buffer_view: Some(gltf_json::Index::new(0)),
         byte_offset: 0,
-        count: triangle_vertices.len() as u32,
+        count: vertices.len() as u32,
         component_type: Valid(gltf_json::accessor::GenericComponentType(
             gltf_json::accessor::ComponentType::F32,
         )),
@@ -231,7 +205,7 @@ fn run_output(path: &str) -> Result<()> {
     let colors = gltf_json::Accessor {
         buffer_view: Some(gltf_json::Index::new(0)),
         byte_offset: (3 * mem::size_of::<f32>()) as u32,
-        count: triangle_vertices.len() as u32,
+        count: vertices.len() as u32,
         component_type: Valid(gltf_json::accessor::GenericComponentType(
             gltf_json::accessor::ComponentType::F32,
         )),
@@ -335,6 +309,18 @@ fn run_output(path: &str) -> Result<()> {
     };
     let writer = std::fs::File::create(path).expect("I/O error");
     glb.to_writer(writer).expect("glTF binary output error");
+    eprintln!("Written to {}", path);
+    Ok(())
+}
+fn run_output(path: &str) -> Result<()> {
+    let vertices = vec![
+        [0.0, 0.5, 0.0],
+        [-0.5, -0.5, 0.0],
+        [0.5, -0.5, 0.0],
+        [0.0, 0.0, 1.0],
+    ];
+    let indices: Vec<[u32; 3]> = vec![[0, 1, 2], [1, 2, 3]];
+    write_glb(&vertices, &indices, path)?;
 
     Ok(())
 }
