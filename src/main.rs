@@ -1,4 +1,5 @@
 #![feature(slice_flatten)]
+#![feature(assert_matches)]
 
 use anyhow::anyhow;
 use anyhow::Context;
@@ -7,6 +8,7 @@ use argh::FromArgs;
 use gltf::Node;
 use gltf::Semantic;
 use gltf_json::validation::Checked::Valid;
+use std::assert_matches::assert_matches;
 use std::borrow::Cow;
 use std::fs;
 use std::io;
@@ -52,76 +54,63 @@ fn run_input(path: &str) -> Result<()> {
     println!("BIN section has {} bytes", bin.len());
 
     for scene in gltf.scenes() {
-        println!(
-            "Scene #{} has {} children",
-            scene.index(),
-            scene.nodes().count(),
-        );
+        println!("Scene #{}", scene.index(),);
         for node in scene.nodes() {
             parse_node(&node, 0)?;
         }
     }
     for mesh in gltf.meshes() {
-        println!(
-            "Mesh #{} has {} primitives. name = {:?}",
-            mesh.index(),
-            mesh.primitives().count(),
-            mesh.name()
-        );
+        println!(" Mesh #{}: name = {:?}", mesh.index(), mesh.name());
         for p in mesh.primitives() {
-            println!(
-                "primitive #{}: Mode = {:?}, BB = {:?}",
-                p.index(),
-                p.mode(),
-                p.bounding_box(),
-            );
+            assert_eq!(p.mode(), gltf::mesh::Mode::Triangles);
             if let (Some(ap), Some(ai)) = (p.get(&Semantic::Positions), p.indices()) {
-                println!(
-                    "Positions accessor: {:?} {:?} {}",
-                    ap.dimensions(),
-                    ap.data_type(),
-                    ap.count(),
-                );
-                println!(
-                    "Indices accessor: {:?} {:?} {}",
-                    ai.dimensions(),
-                    ai.data_type(),
-                    ai.count(),
-                );
-                if let Some(v) = ap.view() {
-                    println!(
-                        "View: len {} bytes, ofs {} bytes, stride: {:?}, name: {:?}",
-                        v.length(),
-                        v.offset(),
-                        v.stride(),
-                        v.name()
-                    );
+                let vertices = {
+                    assert_eq!(ap.dimensions(), gltf::accessor::Dimensions::Vec3);
+                    assert_eq!(ap.data_type(), gltf::accessor::DataType::F32);
+                    let v = ap.view().context("Positions have no view")?;
+                    assert_eq!(v.stride(), None);
                     let b = v.buffer();
-                    println!(
-                        "Buf #{}: from {:?}, name {:?}, len {} bytes",
-                        b.index(),
-                        b.source(),
-                        b.name(),
-                        b.length()
-                    );
-                    if v.length() < 1000 {
-                        let data = &bin[v.offset()..(v.offset() + v.length())];
-                        let data: Vec<f32> = data
-                            .chunks_exact(4)
-                            .map(|ve| {
-                                let mut vec = [0u8; 4];
-                                vec.copy_from_slice(ve);
-                                f32::from_le_bytes(vec)
-                            })
-                            .collect();
-                        let data: Vec<[f32; 3]> =
-                            data.chunks_exact(3).map(|v| [v[0], v[1], v[2]]).collect();
-                        println!("{} triangles", data.len());
-                        for v in data {
-                            println!("{:?}", v)
-                        }
-                    }
-                }
+                    assert_matches!(b.source(), gltf::buffer::Source::Bin);
+                    let data = &bin[v.offset()..(v.offset() + v.length())];
+                    let data: Vec<f32> = data
+                        .chunks_exact(4)
+                        .map(|ve| {
+                            let mut vec = [0u8; 4];
+                            vec.copy_from_slice(ve);
+                            f32::from_le_bytes(vec)
+                        })
+                        .collect();
+                    let data: Vec<[f32; 3]> =
+                        data.chunks_exact(3).map(|v| [v[0], v[1], v[2]]).collect();
+                    data
+                };
+
+                let indices = {
+                    assert_eq!(ai.dimensions(), gltf::accessor::Dimensions::Scalar);
+                    assert_eq!(ai.data_type(), gltf::accessor::DataType::U32);
+                    let v = ai.view().context("Indices have no view")?;
+                    assert_eq!(v.stride(), None);
+                    let b = v.buffer();
+                    assert_matches!(b.source(), gltf::buffer::Source::Bin);
+                    let data = &bin[v.offset()..(v.offset() + v.length())];
+                    let data: Vec<u32> = data
+                        .chunks_exact(4)
+                        .map(|ve| {
+                            let mut vec = [0u8; 4];
+                            vec.copy_from_slice(ve);
+                            u32::from_le_bytes(vec)
+                        })
+                        .collect();
+                    let data: Vec<[u32; 3]> =
+                        data.chunks_exact(3).map(|v| [v[0], v[1], v[2]]).collect();
+                    data
+                };
+                println!(
+                    "    {} vertices, {} triangles in {:?}",
+                    vertices.len(),
+                    indices.len(),
+                    p.bounding_box(),
+                );
             }
         }
     }
