@@ -1,4 +1,7 @@
+#![feature(slice_flatten)]
+
 use anyhow::anyhow;
+use anyhow::Context;
 use anyhow::Result;
 use argh::FromArgs;
 use gltf::Node;
@@ -44,7 +47,10 @@ fn run_input(path: &str) -> Result<()> {
 
     let file = fs::File::open(&path)?;
     let reader = io::BufReader::new(file);
-    let _bin = gltf::binary::Glb::from_reader(reader)?;
+    let bin = gltf::binary::Glb::from_reader(reader)?
+        .bin
+        .context("No binary section")?;
+    println!("BIN section has {} bytes", bin.len());
 
     for scene in gltf.scenes() {
         println!(
@@ -68,11 +74,22 @@ fn run_input(path: &str) -> Result<()> {
                 "primitive #{}: Mode = {:?}, BB = {:?}",
                 p.index(),
                 p.mode(),
-                p.bounding_box()
+                p.bounding_box(),
             );
-            if let Some(a) = p.get(&Semantic::Positions) {
-                println!("Positions: {:?} {:?}", a.dimensions(), a.data_type());
-                if let Some(v) = a.view() {
+            if let (Some(ap), Some(ai)) = (p.get(&Semantic::Positions), p.indices()) {
+                println!(
+                    "Positions accessor: {:?} {:?} {}",
+                    ap.dimensions(),
+                    ap.data_type(),
+                    ap.count(),
+                );
+                println!(
+                    "Indices accessor: {:?} {:?} {}",
+                    ai.dimensions(),
+                    ai.data_type(),
+                    ai.count(),
+                );
+                if let Some(v) = ap.view() {
                     println!(
                         "View: len {} bytes, ofs {} bytes, stride: {:?}, name: {:?}",
                         v.length(),
@@ -82,11 +99,29 @@ fn run_input(path: &str) -> Result<()> {
                     );
                     let b = v.buffer();
                     println!(
-                        "Buf #{}: from {:?}, name {:?}",
+                        "Buf #{}: from {:?}, name {:?}, len {} bytes",
                         b.index(),
                         b.source(),
-                        b.name()
-                    )
+                        b.name(),
+                        b.length()
+                    );
+                    if v.length() < 1000 {
+                        let data = &bin[v.offset()..(v.offset() + v.length())];
+                        let data: Vec<f32> = data
+                            .chunks_exact(4)
+                            .map(|ve| {
+                                let mut vec = [0u8; 4];
+                                vec.copy_from_slice(ve);
+                                f32::from_le_bytes(vec)
+                            })
+                            .collect();
+                        let data: Vec<[f32; 3]> =
+                            data.chunks_exact(3).map(|v| [v[0], v[1], v[2]]).collect();
+                        println!("{} triangles", data.len());
+                        for v in data {
+                            println!("{:?}", v)
+                        }
+                    }
                 }
             }
         }
@@ -113,16 +148,25 @@ fn align_to_multiple_of_four(n: &mut u32) {
     *n = (*n + 3) & !3;
 }
 
-fn to_padded_byte_vector<T>(vec: Vec<T>) -> Vec<u8> {
-    let byte_length = vec.len() * mem::size_of::<T>();
-    let byte_capacity = vec.capacity() * mem::size_of::<T>();
-    let alloc = vec.into_boxed_slice();
-    let ptr = Box::<[T]>::into_raw(alloc) as *mut u8;
-    let mut new_vec = unsafe { Vec::from_raw_parts(ptr, byte_length, byte_capacity) };
-    while new_vec.len() % 4 != 0 {
-        new_vec.push(0); // pad to multiple of four bytes
+fn append_bytes<T>(bin: &mut Vec<u8>, src: &[T]) -> (u32, u32) {
+    let ofs = bin.len();
+    assert_eq!(ofs % 4, 0);
+    let src: &[u8] = unsafe {
+        std::slice::from_raw_parts(
+            src.as_ptr() as *const u8,
+            src.len() * std::mem::size_of::<T>(),
+        )
+    };
+    let len = src.len();
+    // Append the data
+    bin.resize(bin.len() + len, 0);
+    bin[ofs..ofs + len].copy_from_slice(&src[0..len]);
+    // Insert padding if needed
+    while bin.len() % 4 != 0 {
+        bin.push(0); // pad to multiple of four bytes
     }
-    new_vec
+    eprintln!("append_bytes: added {} bytes at ofs {}", len, ofs);
+    (ofs as u32, len as u32)
 }
 fn run_output(path: &str) -> Result<()> {
     let triangle_vertices = vec![
@@ -138,28 +182,48 @@ fn run_output(path: &str) -> Result<()> {
             position: [0.5, -0.5, 0.0],
             color: [0.0, 0.0, 1.0],
         },
+        Vertex {
+            position: [0.0, 0.0, 1.0],
+            color: [0.0, 0.0, 1.0],
+        },
     ];
+    let mut bin = Vec::new();
+    let (bin_vertices_ofs, bin_vertices_len) = append_bytes(&mut bin, &triangle_vertices);
+    let indices: Vec<[u32; 3]> = vec![[0, 1, 2], [1, 2, 3]];
+    let indices = indices.flatten();
+    let (bin_indices_ofs, bin_indices_len) = append_bytes(&mut bin, indices);
 
-    let (min, max) = bounding_coords(&triangle_vertices);
-
-    let buffer_length = (triangle_vertices.len() * mem::size_of::<Vertex>()) as u32;
+    let bin_size = bin.len() as u32;
     let buffer = json::Buffer {
-        byte_length: buffer_length,
+        byte_length: bin_size,
         extensions: Default::default(),
         extras: Default::default(),
         name: None,
         uri: None,
     };
-    let buffer_view = json::buffer::View {
+
+    let vertex_buffer_view = json::buffer::View {
         buffer: json::Index::new(0),
-        byte_length: buffer.byte_length,
-        byte_offset: None,
+        byte_length: bin_vertices_len,
+        byte_offset: Some(bin_vertices_ofs),
         byte_stride: Some(mem::size_of::<Vertex>() as u32),
         extensions: Default::default(),
         extras: Default::default(),
         name: None,
         target: Some(Valid(json::buffer::Target::ArrayBuffer)),
     };
+    let indices_buffer_view = json::buffer::View {
+        buffer: json::Index::new(0),
+        byte_length: bin_indices_len,
+        byte_offset: Some(bin_indices_ofs),
+        byte_stride: None,
+        extensions: Default::default(),
+        extras: Default::default(),
+        name: None,
+        target: Some(Valid(json::buffer::Target::ArrayBuffer)),
+    };
+
+    let (min, max) = bounding_coords(&triangle_vertices);
     let positions = json::Accessor {
         buffer_view: Some(json::Index::new(0)),
         byte_offset: 0,
@@ -193,6 +257,23 @@ fn run_output(path: &str) -> Result<()> {
         sparse: None,
     };
 
+    let indices = json::Accessor {
+        buffer_view: Some(json::Index::new(1)),
+        byte_offset: 0,
+        count: indices.len() as u32,
+        component_type: Valid(json::accessor::GenericComponentType(
+            json::accessor::ComponentType::U32,
+        )),
+        extensions: Default::default(),
+        extras: Default::default(),
+        type_: Valid(json::accessor::Type::Scalar),
+        min: None,
+        max: None,
+        name: None,
+        normalized: false,
+        sparse: None,
+    };
+
     let primitive = json::mesh::Primitive {
         attributes: {
             let mut map = std::collections::HashMap::new();
@@ -202,7 +283,7 @@ fn run_output(path: &str) -> Result<()> {
         },
         extensions: Default::default(),
         extras: Default::default(),
-        indices: None,
+        indices: Some(json::Index::new(2)),
         material: None,
         mode: Valid(json::mesh::Mode::Triangles),
         targets: None,
@@ -232,9 +313,9 @@ fn run_output(path: &str) -> Result<()> {
     };
 
     let root = json::Root {
-        accessors: vec![positions, colors],
+        accessors: vec![positions, colors, indices],
         buffers: vec![buffer],
-        buffer_views: vec![buffer_view],
+        buffer_views: vec![vertex_buffer_view, indices_buffer_view],
         meshes: vec![mesh],
         nodes: vec![node],
         scenes: vec![json::Scene {
@@ -253,9 +334,9 @@ fn run_output(path: &str) -> Result<()> {
         header: gltf::binary::Header {
             magic: *b"glTF",
             version: 2,
-            length: json_offset + buffer_length,
+            length: json_offset + bin_size,
         },
-        bin: Some(Cow::Owned(to_padded_byte_vector(triangle_vertices))),
+        bin: Some(Cow::Owned(bin)),
         json: Cow::Owned(json_string.into_bytes()),
     };
     let writer = std::fs::File::create(path).expect("I/O error");
