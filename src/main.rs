@@ -6,8 +6,7 @@ use anyhow::Result;
 use argh::FromArgs;
 use gltf::Node;
 use gltf::Semantic;
-use gltf_json as json;
-use json::validation::Checked::Valid;
+use gltf_json::validation::Checked::Valid;
 use std::borrow::Cow;
 use std::fs;
 use std::io;
@@ -194,7 +193,7 @@ fn run_output(path: &str) -> Result<()> {
     let (bin_indices_ofs, bin_indices_len) = append_bytes(&mut bin, indices);
 
     let bin_size = bin.len() as u32;
-    let buffer = json::Buffer {
+    let buffer = gltf_json::Buffer {
         byte_length: bin_size,
         extensions: Default::default(),
         extras: Default::default(),
@@ -202,54 +201,54 @@ fn run_output(path: &str) -> Result<()> {
         uri: None,
     };
 
-    let vertex_buffer_view = json::buffer::View {
-        buffer: json::Index::new(0),
+    let vertex_buffer_view = gltf_json::buffer::View {
+        buffer: gltf_json::Index::new(0),
         byte_length: bin_vertices_len,
         byte_offset: Some(bin_vertices_ofs),
         byte_stride: Some(mem::size_of::<Vertex>() as u32),
         extensions: Default::default(),
         extras: Default::default(),
         name: None,
-        target: Some(Valid(json::buffer::Target::ArrayBuffer)),
+        target: Some(Valid(gltf_json::buffer::Target::ArrayBuffer)),
     };
-    let indices_buffer_view = json::buffer::View {
-        buffer: json::Index::new(0),
+    let indices_buffer_view = gltf_json::buffer::View {
+        buffer: gltf_json::Index::new(0),
         byte_length: bin_indices_len,
         byte_offset: Some(bin_indices_ofs),
         byte_stride: None,
         extensions: Default::default(),
         extras: Default::default(),
         name: None,
-        target: Some(Valid(json::buffer::Target::ArrayBuffer)),
+        target: Some(Valid(gltf_json::buffer::Target::ArrayBuffer)),
     };
 
     let (min, max) = bounding_coords(&triangle_vertices);
-    let positions = json::Accessor {
-        buffer_view: Some(json::Index::new(0)),
+    let positions = gltf_json::Accessor {
+        buffer_view: Some(gltf_json::Index::new(0)),
         byte_offset: 0,
         count: triangle_vertices.len() as u32,
-        component_type: Valid(json::accessor::GenericComponentType(
-            json::accessor::ComponentType::F32,
+        component_type: Valid(gltf_json::accessor::GenericComponentType(
+            gltf_json::accessor::ComponentType::F32,
         )),
         extensions: Default::default(),
         extras: Default::default(),
-        type_: Valid(json::accessor::Type::Vec3),
-        min: Some(json::Value::from(Vec::from(min))),
-        max: Some(json::Value::from(Vec::from(max))),
+        type_: Valid(gltf_json::accessor::Type::Vec3),
+        min: Some(gltf_json::Value::from(Vec::from(min))),
+        max: Some(gltf_json::Value::from(Vec::from(max))),
         name: None,
         normalized: false,
         sparse: None,
     };
-    let colors = json::Accessor {
-        buffer_view: Some(json::Index::new(0)),
+    let colors = gltf_json::Accessor {
+        buffer_view: Some(gltf_json::Index::new(0)),
         byte_offset: (3 * mem::size_of::<f32>()) as u32,
         count: triangle_vertices.len() as u32,
-        component_type: Valid(json::accessor::GenericComponentType(
-            json::accessor::ComponentType::F32,
+        component_type: Valid(gltf_json::accessor::GenericComponentType(
+            gltf_json::accessor::ComponentType::F32,
         )),
         extensions: Default::default(),
         extras: Default::default(),
-        type_: Valid(json::accessor::Type::Vec3),
+        type_: Valid(gltf_json::accessor::Type::Vec3),
         min: None,
         max: None,
         name: None,
@@ -257,16 +256,16 @@ fn run_output(path: &str) -> Result<()> {
         sparse: None,
     };
 
-    let indices = json::Accessor {
-        buffer_view: Some(json::Index::new(1)),
+    let indices = gltf_json::Accessor {
+        buffer_view: Some(gltf_json::Index::new(1)),
         byte_offset: 0,
         count: indices.len() as u32,
-        component_type: Valid(json::accessor::GenericComponentType(
-            json::accessor::ComponentType::U32,
+        component_type: Valid(gltf_json::accessor::GenericComponentType(
+            gltf_json::accessor::ComponentType::U32,
         )),
         extensions: Default::default(),
         extras: Default::default(),
-        type_: Valid(json::accessor::Type::Scalar),
+        type_: Valid(gltf_json::accessor::Type::Scalar),
         min: None,
         max: None,
         name: None,
@@ -274,22 +273,28 @@ fn run_output(path: &str) -> Result<()> {
         sparse: None,
     };
 
-    let primitive = json::mesh::Primitive {
+    let primitive = gltf_json::mesh::Primitive {
         attributes: {
             let mut map = std::collections::HashMap::new();
-            map.insert(Valid(json::mesh::Semantic::Positions), json::Index::new(0));
-            map.insert(Valid(json::mesh::Semantic::Colors(0)), json::Index::new(1));
+            map.insert(
+                Valid(gltf_json::mesh::Semantic::Positions),
+                gltf_json::Index::new(0),
+            );
+            map.insert(
+                Valid(gltf_json::mesh::Semantic::Colors(0)),
+                gltf_json::Index::new(1),
+            );
             map
         },
         extensions: Default::default(),
         extras: Default::default(),
-        indices: Some(json::Index::new(2)),
+        indices: Some(gltf_json::Index::new(2)),
         material: None,
-        mode: Valid(json::mesh::Mode::Triangles),
+        mode: Valid(gltf_json::mesh::Mode::Triangles),
         targets: None,
     };
 
-    let mesh = json::Mesh {
+    let mesh = gltf_json::Mesh {
         extensions: Default::default(),
         extras: Default::default(),
         name: None,
@@ -297,13 +302,13 @@ fn run_output(path: &str) -> Result<()> {
         weights: None,
     };
 
-    let node = json::Node {
+    let node = gltf_json::Node {
         camera: None,
         children: None,
         extensions: Default::default(),
         extras: Default::default(),
         matrix: None,
-        mesh: Some(json::Index::new(0)),
+        mesh: Some(gltf_json::Index::new(0)),
         name: None,
         rotation: None,
         scale: None,
@@ -312,22 +317,22 @@ fn run_output(path: &str) -> Result<()> {
         weights: None,
     };
 
-    let root = json::Root {
+    let root = gltf_json::Root {
         accessors: vec![positions, colors, indices],
         buffers: vec![buffer],
         buffer_views: vec![vertex_buffer_view, indices_buffer_view],
         meshes: vec![mesh],
         nodes: vec![node],
-        scenes: vec![json::Scene {
+        scenes: vec![gltf_json::Scene {
             extensions: Default::default(),
             extras: Default::default(),
             name: None,
-            nodes: vec![json::Index::new(0)],
+            nodes: vec![gltf_json::Index::new(0)],
         }],
         ..Default::default()
     };
 
-    let json_string = json::serialize::to_string(&root).expect("Serialization error");
+    let json_string = gltf_json::serialize::to_string(&root).expect("Serialization error");
     let mut json_offset = json_string.len() as u32;
     align_to_multiple_of_four(&mut json_offset);
     let glb = gltf::binary::Glb {
