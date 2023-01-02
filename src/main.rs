@@ -12,7 +12,7 @@ use std::assert_matches::assert_matches;
 use std::borrow::Cow;
 use std::fs;
 use std::io;
-use std::mem;
+use std::path::Path;
 
 #[derive(FromArgs)]
 /// VRM as a Code
@@ -45,6 +45,9 @@ fn run_input(path: &str) -> Result<()> {
         .bin
         .context("No binary section")?;
     println!("BIN section has {} bytes", bin.len());
+
+    let parts_dir = Path::new(path).with_extension("parts");
+    fs::create_dir_all(parts_dir.clone())?;
 
     for scene in gltf.scenes() {
         println!("Scene #{}", scene.index(),);
@@ -105,6 +108,15 @@ fn run_input(path: &str) -> Result<()> {
                     indices.len(),
                     p.bounding_box(),
                 );
+                let mut path = parts_dir.clone();
+                path.push(format!(
+                    "{}{}_{}.glb",
+                    mesh.name().unwrap_or("None"),
+                    mesh.index(),
+                    p.index(),
+                ));
+                let path = path.to_string_lossy();
+                write_glb(&vertices, &indices, &path)?;
             }
         }
     }
@@ -150,6 +162,7 @@ fn append_bytes<T>(bin: &mut Vec<u8>, src: &[T]) -> (u32, u32) {
     (ofs as u32, len as u32)
 }
 fn write_glb(vertices: &[[f32; 3]], indices: &[[u32; 3]], path: &str) -> Result<()> {
+    eprintln!("Generating {}...", path);
     let mut bin = Vec::new();
     let (bin_vertices_ofs, bin_vertices_len) = append_bytes(&mut bin, &vertices);
     let indices = indices.flatten();
@@ -202,23 +215,6 @@ fn write_glb(vertices: &[[f32; 3]], indices: &[[u32; 3]], path: &str) -> Result<
         normalized: false,
         sparse: None,
     };
-    let colors = gltf_json::Accessor {
-        buffer_view: Some(gltf_json::Index::new(0)),
-        byte_offset: (3 * mem::size_of::<f32>()) as u32,
-        count: vertices.len() as u32,
-        component_type: Valid(gltf_json::accessor::GenericComponentType(
-            gltf_json::accessor::ComponentType::F32,
-        )),
-        extensions: Default::default(),
-        extras: Default::default(),
-        type_: Valid(gltf_json::accessor::Type::Vec3),
-        min: None,
-        max: None,
-        name: None,
-        normalized: false,
-        sparse: None,
-    };
-
     let indices = gltf_json::Accessor {
         buffer_view: Some(gltf_json::Index::new(1)),
         byte_offset: 0,
@@ -243,15 +239,11 @@ fn write_glb(vertices: &[[f32; 3]], indices: &[[u32; 3]], path: &str) -> Result<
                 Valid(gltf_json::mesh::Semantic::Positions),
                 gltf_json::Index::new(0),
             );
-            map.insert(
-                Valid(gltf_json::mesh::Semantic::Colors(0)),
-                gltf_json::Index::new(1),
-            );
             map
         },
         extensions: Default::default(),
         extras: Default::default(),
-        indices: Some(gltf_json::Index::new(2)),
+        indices: Some(gltf_json::Index::new(1)),
         material: None,
         mode: Valid(gltf_json::mesh::Mode::Triangles),
         targets: None,
@@ -281,7 +273,7 @@ fn write_glb(vertices: &[[f32; 3]], indices: &[[u32; 3]], path: &str) -> Result<
     };
 
     let root = gltf_json::Root {
-        accessors: vec![positions, colors, indices],
+        accessors: vec![positions, indices],
         buffers: vec![buffer],
         buffer_views: vec![vertex_buffer_view, indices_buffer_view],
         meshes: vec![mesh],
