@@ -5,6 +5,7 @@ use anyhow::anyhow;
 use anyhow::Context;
 use anyhow::Result;
 use argh::FromArgs;
+use gltf::buffer::Source;
 use gltf::Node;
 use gltf::Semantic;
 use gltf_json::validation::Checked::Valid;
@@ -60,7 +61,17 @@ fn run_input(path: &str) -> Result<()> {
         println!(" Mesh #{}: name = {:?}", mesh.index(), mesh.name());
         for p in mesh.primitives() {
             assert_eq!(p.mode(), gltf::mesh::Mode::Triangles);
-            if let (Some(ap), Some(ai)) = (p.get(&Semantic::Positions), p.indices()) {
+            if let (Some(ap), Some(ai), Some(at0), Some(bct)) = (
+                p.get(&Semantic::Positions),
+                p.indices(),
+                p.get(&Semantic::TexCoords(0)),
+                p.material().pbr_metallic_roughness().base_color_texture(),
+            ) {
+                println!(
+                    "Base Color Texture: tex_coord: {}, texture.index: {}",
+                    bct.tex_coord(),
+                    bct.texture().index()
+                );
                 let vertices = {
                     assert_eq!(ap.dimensions(), gltf::accessor::Dimensions::Vec3);
                     assert_eq!(ap.data_type(), gltf::accessor::DataType::F32);
@@ -125,6 +136,24 @@ fn run_input(path: &str) -> Result<()> {
                 )?;
                 pcount += 1;
             }
+        }
+    }
+    for t in gltf.textures() {
+        println!(" Texture #{}: name = {:?}", t.index(), t.name());
+    }
+    for m in gltf.images() {
+        println!(" Image #{}: name = {:?}", m.index(), m.name());
+        if let gltf::image::Source::View { view, mime_type } = m.source() {
+            println!("  source_type: {mime_type}",);
+            assert_eq!(mime_type, "image/png");
+            let buffer = view.buffer();
+            assert_matches!(buffer.source(), Source::Bin);
+            let offset = view.offset();
+            let length = view.length();
+            let mut path = parts_dir.clone();
+            path.push(format!("i{}_{}.png", m.index(), m.name().unwrap_or("None"),));
+            let path = path.to_string_lossy().into_owned();
+            fs::write(path, &bin[offset..(offset + length)])?;
         }
     }
     Ok(())
