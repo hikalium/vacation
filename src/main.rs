@@ -55,6 +55,7 @@ fn run_input(path: &str) -> Result<()> {
             parse_node(&node, 0)?;
         }
     }
+    let mut pcount = 0;
     for mesh in gltf.meshes() {
         println!(" Mesh #{}: name = {:?}", mesh.index(), mesh.name());
         for p in mesh.primitives() {
@@ -116,7 +117,13 @@ fn run_input(path: &str) -> Result<()> {
                     p.index(),
                 ));
                 let path = path.to_string_lossy();
-                write_glb(&vertices, &indices, &path)?;
+                write_glb(
+                    &vertices,
+                    &indices,
+                    Some([0f32, 0f32, pcount as f32 / 10.0]),
+                    &path,
+                )?;
+                pcount += 1;
             }
         }
     }
@@ -161,7 +168,12 @@ fn append_bytes<T>(bin: &mut Vec<u8>, src: &[T]) -> (u32, u32) {
     eprintln!("append_bytes: added {} bytes at ofs {}", len, ofs);
     (ofs as u32, len as u32)
 }
-fn write_glb(vertices: &[[f32; 3]], indices: &[[u32; 3]], path: &str) -> Result<()> {
+fn write_glb(
+    vertices: &[[f32; 3]],
+    indices: &[[u32; 3]],
+    translation: Option<[f32; 3]>,
+    path: &str,
+) -> Result<()> {
     eprintln!("Generating {}...", path);
     let mut bin = Vec::new();
     let (bin_vertices_ofs, bin_vertices_len) = append_bytes(&mut bin, &vertices);
@@ -267,7 +279,7 @@ fn write_glb(vertices: &[[f32; 3]], indices: &[[u32; 3]], path: &str) -> Result<
         name: None,
         rotation: None,
         scale: None,
-        translation: None,
+        translation,
         skin: None,
         weights: None,
     };
@@ -312,7 +324,7 @@ fn run_output(path: &str) -> Result<()> {
         [0.0, 0.0, 1.0],
     ];
     let indices: Vec<[u32; 3]> = vec![[0, 1, 2], [1, 2, 3]];
-    write_glb(&vertices, &indices, path)?;
+    write_glb(&vertices, &indices, None, path)?;
 
     Ok(())
 }
