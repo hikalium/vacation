@@ -326,4 +326,5 @@ dependencies = [
  "argh",
  "gltf",
  "gltf-json",
+ "serde_json",
 ]

@@ -9,8 +9,16 @@ use gltf::buffer::Source;
 use gltf::Image;
 use gltf::Node;
 use gltf::Semantic;
+use gltf_json::extensions::texture::TextureTransform;
+use gltf_json::extensions::texture::TextureTransformOffset;
+use gltf_json::extensions::texture::TextureTransformRotation;
+use gltf_json::extensions::texture::TextureTransformScale;
+use gltf_json::extras::RawValue;
 use gltf_json::image::MimeType;
+use gltf_json::material::PbrBaseColorFactor;
 use gltf_json::validation::Checked::Valid;
+use gltf_json::Accessor;
+use gltf_json::Index;
 use std::assert_matches::assert_matches;
 use std::borrow::Cow;
 use std::fs;
@@ -23,9 +31,6 @@ struct Args {
     /// path to .vrm file to parse
     #[argh(option)]
     input: Option<String>,
-    /// path to .vrm file to export
-    #[argh(option)]
-    output: Option<String>,
 }
 
 fn parse_node(node: &Node, depth: usize) -> Result<()> {
@@ -67,6 +72,9 @@ fn run_input(path: &str) -> Result<()> {
     let parts_dir = Path::new(path).with_extension("parts");
     fs::create_dir_all(parts_dir.clone())?;
 
+    println!("extensions_used: {:?}", gltf.extensions_used());
+    println!("extensions_required: {:?}", gltf.extensions_required());
+
     for scene in gltf.scenes() {
         println!("Scene #{}", scene.index(),);
         for node in scene.nodes() {
@@ -78,24 +86,85 @@ fn run_input(path: &str) -> Result<()> {
         println!(" Mesh #{}: name = {:?}", mesh.index(), mesh.name());
         for p in mesh.primitives() {
             assert_eq!(p.mode(), gltf::mesh::Mode::Triangles);
-            if let (Some(ap), Some(ai), Some(at0), Some(bct)) = (
+            assert!(p.get(&Semantic::TexCoords(1)).is_none());
+            assert!(p.get(&Semantic::Colors(0)).is_none());
+            assert!(p.get(&Semantic::Normals).is_some());
+            assert!(p.get(&Semantic::Tangents).is_none());
+            assert!(p.get(&Semantic::Joints(0)).is_some());
+            assert!(p.get(&Semantic::Joints(1)).is_none());
+            assert!(p.get(&Semantic::Weights(0)).is_some());
+            assert!(p.get(&Semantic::Weights(1)).is_none());
+            if let (Some(ap), Some(an), Some(ai), Some(at0)) = (
                 p.get(&Semantic::Positions),
+                p.get(&Semantic::Normals),
                 p.indices(),
                 p.get(&Semantic::TexCoords(0)),
-                p.material().pbr_metallic_roughness().base_color_texture(),
             ) {
+                let pbr = p.material().pbr_metallic_roughness();
                 println!(
-                    "Base Color Texture: tex_coord: {}, texture.index: {}, texture.source.index: {}",
+                    "pbr_factors: base: {:?}, metallic: {:?}, roughness: {:?}",
+                    pbr.base_color_factor(),
+                    pbr.metallic_factor(),
+                    pbr.roughness_factor(),
+                );
+                let bct = pbr.base_color_texture().unwrap();
+                println!(
+                    "Base Color Texture: tex_coord: {}, texture.index: {}, texture.source.index: {}, {:?}, {:?}, {:?}, {:?}, {:?}",
                     bct.tex_coord(),
                     bct.texture().index(),
                     bct.texture().source().index(),
+                    bct.texture().sampler().mag_filter(),
+                    bct.texture().sampler().min_filter(),
+                    bct.texture().sampler().wrap_s(),
+                    bct.texture().sampler().wrap_t(),
+                    bct.texture_transform().is_some(),
                 );
+                assert!(pbr.metallic_roughness_texture().is_none());
                 let png_data = extract_png_data_from_image(&bin, &bct.texture().source())
                     .context("Failed to find a png image for a texture")?;
+                let tex_coords0 = {
+                    assert_eq!(at0.dimensions(), gltf::accessor::Dimensions::Vec2);
+                    assert_eq!(at0.data_type(), gltf::accessor::DataType::F32);
+                    let v = at0.view().context("TexCoords have no view")?;
+                    assert_eq!(v.stride(), None);
+                    let b = v.buffer();
+                    assert_matches!(b.source(), gltf::buffer::Source::Bin);
+                    let data = &bin[v.offset()..(v.offset() + v.length())];
+                    let data: Vec<f32> = data
+                        .chunks_exact(4)
+                        .map(|ve| {
+                            let mut vec = [0u8; 4];
+                            vec.copy_from_slice(ve);
+                            f32::from_le_bytes(vec)
+                        })
+                        .collect();
+                    let data: Vec<[f32; 2]> = data.chunks_exact(2).map(|v| [v[0], v[1]]).collect();
+                    data
+                };
                 let vertices = {
                     assert_eq!(ap.dimensions(), gltf::accessor::Dimensions::Vec3);
                     assert_eq!(ap.data_type(), gltf::accessor::DataType::F32);
                     let v = ap.view().context("Positions have no view")?;
+                    assert_eq!(v.stride(), None);
+                    let b = v.buffer();
+                    assert_matches!(b.source(), gltf::buffer::Source::Bin);
+                    let data = &bin[v.offset()..(v.offset() + v.length())];
+                    let data: Vec<f32> = data
+                        .chunks_exact(4)
+                        .map(|ve| {
+                            let mut vec = [0u8; 4];
+                            vec.copy_from_slice(ve);
+                            f32::from_le_bytes(vec)
+                        })
+                        .collect();
+                    let data: Vec<[f32; 3]> =
+                        data.chunks_exact(3).map(|v| [v[0], v[1], v[2]]).collect();
+                    data
+                };
+                let normals = {
+                    assert_eq!(an.dimensions(), gltf::accessor::Dimensions::Vec3);
+                    assert_eq!(an.data_type(), gltf::accessor::DataType::F32);
+                    let v = an.view().context("Positions have no view")?;
                     assert_eq!(v.stride(), None);
                     let b = v.buffer();
                     assert_matches!(b.source(), gltf::buffer::Source::Bin);
@@ -151,7 +220,8 @@ fn run_input(path: &str) -> Result<()> {
                 write_glb(
                     &vertices,
                     &indices,
-                    Some(&png_data),
+                    &normals,
+                    Some((&png_data, tex_coords0.as_slice())),
                     Some([0f32, 0f32, pcount as f32 / 10.0]),
                     &path,
                 )?;
@@ -173,12 +243,24 @@ fn run_input(path: &str) -> Result<()> {
 }
 
 /// Calculate bounding coordinates of a list of vertices, used for the clipping distance of the model
-fn bounding_coords(points: &[[f32; 3]]) -> ([f32; 3], [f32; 3]) {
+fn bounding_coords3d(points: &[[f32; 3]]) -> ([f32; 3], [f32; 3]) {
     let mut min = [f32::MAX, f32::MAX, f32::MAX];
     let mut max = [f32::MIN, f32::MIN, f32::MIN];
 
     for p in points {
         for i in 0..3 {
+            min[i] = f32::min(min[i], p[i]);
+            max[i] = f32::max(max[i], p[i]);
+        }
+    }
+    (min, max)
+}
+fn bounding_coords2d(points: &[[f32; 2]]) -> ([f32; 2], [f32; 2]) {
+    let mut min = [f32::MAX, f32::MAX];
+    let mut max = [f32::MIN, f32::MIN];
+
+    for p in points {
+        for i in 0..2 {
             min[i] = f32::min(min[i], p[i]);
             max[i] = f32::max(max[i], p[i]);
         }
@@ -213,15 +295,17 @@ fn append_bytes<T>(bin: &mut Vec<u8>, src: &[T]) -> (u32, u32) {
 fn write_glb(
     vertices: &[[f32; 3]],
     indices: &[[u32; 3]],
-    png_data: Option<&[u8]>,
+    normals: &[[f32; 3]],
+    material: Option<(&[u8], &[[f32; 2]])>,
     translation: Option<[f32; 3]>,
     path: &str,
 ) -> Result<()> {
     eprintln!("Generating {}...", path);
     let mut bin = Vec::new();
     let (bin_vertices_ofs, bin_vertices_len) = append_bytes(&mut bin, &vertices);
+    let (bin_normals_ofs, bin_normals_len) = append_bytes(&mut bin, &normals);
     let indices = indices.flatten();
-    let (bin_indices_ofs, bin_indices_len) = append_bytes(&mut bin, indices);
+    let (bin_indices_ofs, bin_indices_len) = append_bytes(&mut bin, &indices);
 
     //
     // Buffer views
@@ -233,6 +317,18 @@ fn write_glb(
         buffer: gltf_json::Index::new(0),
         byte_length: bin_vertices_len,
         byte_offset: Some(bin_vertices_ofs),
+        byte_stride: None,
+        extensions: Default::default(),
+        extras: Default::default(),
+        name: None,
+        target: Some(Valid(gltf_json::buffer::Target::ArrayBuffer)),
+    });
+
+    let normals_buffer_view_idx = gltf_json::Index::new(buffer_views.len() as u32);
+    buffer_views.push(gltf_json::buffer::View {
+        buffer: gltf_json::Index::new(0),
+        byte_length: bin_normals_len,
+        byte_offset: Some(bin_normals_ofs),
         byte_stride: None,
         extensions: Default::default(),
         extras: Default::default(),
@@ -257,12 +353,30 @@ fn write_glb(
     //
     let mut accessors = Vec::new();
 
-    let (min, max) = bounding_coords(vertices);
+    let (min, max) = bounding_coords3d(vertices);
     let positions_accessor_idx = gltf_json::Index::new(accessors.len() as u32);
     accessors.push(gltf_json::Accessor {
         buffer_view: Some(vertex_buffer_view_idx),
         byte_offset: 0,
         count: vertices.len() as u32,
+        component_type: Valid(gltf_json::accessor::GenericComponentType(
+            gltf_json::accessor::ComponentType::F32,
+        )),
+        extensions: Default::default(),
+        extras: Default::default(),
+        type_: Valid(gltf_json::accessor::Type::Vec3),
+        min: Some(gltf_json::Value::from(Vec::from(min))),
+        max: Some(gltf_json::Value::from(Vec::from(max))),
+        name: None,
+        normalized: false,
+        sparse: None,
+    });
+    let (min, max) = bounding_coords3d(normals);
+    let normals_accessor_idx: Index<Accessor> = gltf_json::Index::new(accessors.len() as u32);
+    accessors.push(gltf_json::Accessor {
+        buffer_view: Some(normals_buffer_view_idx),
+        byte_offset: 0,
+        count: normals.len() as u32,
         component_type: Valid(gltf_json::accessor::GenericComponentType(
             gltf_json::accessor::ComponentType::F32,
         )),
@@ -294,13 +408,24 @@ fn write_glb(
     });
 
     //
-    // Texture related objects
+    // Primitive
+    //
+
+    let mut attributes = std::collections::HashMap::new();
+    attributes.insert(
+        Valid(gltf_json::mesh::Semantic::Positions),
+        positions_accessor_idx,
+    );
+    //
+    // Material related objects
     //
     let mut images = Vec::new();
     let mut textures = Vec::new();
     let mut materials = Vec::new();
-    let material = if let Some(png_data) = png_data {
+    let mut samplers = Vec::new();
+    let material = if let Some((png_data, uv)) = material {
         let (png_ofs, png_len) = append_bytes(&mut bin, png_data);
+        let (uv_ofs, uv_len) = append_bytes(&mut bin, uv.flatten());
         let png_buffer_view_idx = gltf_json::Index::new(buffer_views.len() as u32);
         buffer_views.push(gltf_json::buffer::View {
             buffer: gltf_json::Index::new(0),
@@ -312,6 +437,39 @@ fn write_glb(
             name: None,
             target: Some(Valid(gltf_json::buffer::Target::ArrayBuffer)),
         });
+        let uv_buffer_view_idx = gltf_json::Index::new(buffer_views.len() as u32);
+        buffer_views.push(gltf_json::buffer::View {
+            buffer: gltf_json::Index::new(0),
+            byte_length: uv_len,
+            byte_offset: Some(uv_ofs),
+            byte_stride: None,
+            extensions: Default::default(),
+            extras: Default::default(),
+            name: None,
+            target: Some(Valid(gltf_json::buffer::Target::ArrayBuffer)),
+        });
+        let (min, max) = bounding_coords2d(uv);
+        let uv_accessor_idx = gltf_json::Index::new(accessors.len() as u32);
+        accessors.push(gltf_json::Accessor {
+            buffer_view: Some(uv_buffer_view_idx),
+            byte_offset: 0,
+            count: vertices.len() as u32,
+            component_type: Valid(gltf_json::accessor::GenericComponentType(
+                gltf_json::accessor::ComponentType::F32,
+            )),
+            extensions: Default::default(),
+            extras: Default::default(),
+            type_: Valid(gltf_json::accessor::Type::Vec2),
+            min: Some(gltf_json::Value::from(Vec::from(min))),
+            max: Some(gltf_json::Value::from(Vec::from(max))),
+            name: None,
+            normalized: false,
+            sparse: None,
+        });
+        attributes.insert(
+            Valid(gltf_json::mesh::Semantic::TexCoords(0)),
+            uv_accessor_idx,
+        );
 
         let image_idx = gltf_json::Index::new(images.len() as u32);
         images.push(gltf_json::image::Image {
@@ -322,17 +480,39 @@ fn write_glb(
             extensions: None,
             extras: Default::default(),
         });
-
-        let texture_idx = gltf_json::Index::new(textures.len() as u32);
-        textures.push(gltf_json::texture::Texture {
+        let sampler_idx = gltf_json::Index::new(samplers.len() as u32);
+        samplers.push(gltf_json::texture::Sampler {
+            mag_filter: Some(Valid(gltf::texture::MagFilter::Linear)),
+            min_filter: Some(Valid(gltf::texture::MinFilter::Linear)),
+            wrap_s: Valid(gltf::texture::WrappingMode::Repeat),
+            wrap_t: Valid(gltf::texture::WrappingMode::Repeat),
             name: None,
-            sampler: None,
-            source: image_idx,
             extensions: None,
             extras: Default::default(),
         });
 
+        let info = gltf_json::extensions::texture::Info {
+            texture_transform: Some(TextureTransform {
+                offset: TextureTransformOffset([0.0, 0.0]),
+                rotation: TextureTransformRotation(0.0),
+                scale: TextureTransformScale([0.0, 0.0]),
+                tex_coord: Some(uv_accessor_idx.value() as u32),
+                extras: Default::default(),
+            }),
+        };
+        let texture_idx = gltf_json::Index::new(textures.len() as u32);
+        textures.push(gltf_json::texture::Texture {
+            name: None,
+            sampler: Some(sampler_idx),
+            source: image_idx,
+            extensions: Some(gltf_json::extensions::texture::Texture {}),
+            extras: Some(RawValue::from_string(serde_json::to_string(&info)?)?),
+        });
+
         let pbr_metallic_roughness = gltf_json::material::PbrMetallicRoughness {
+            base_color_factor: PbrBaseColorFactor([1.0, 1.0, 1.0, 1.0]),
+            metallic_factor: gltf_json::material::StrengthFactor(0.0),
+            roughness_factor: gltf_json::material::StrengthFactor(0.9),
             base_color_texture: Some(gltf_json::texture::Info {
                 index: texture_idx,
                 tex_coord: 0,
@@ -356,6 +536,10 @@ fn write_glb(
             map.insert(
                 Valid(gltf_json::mesh::Semantic::Positions),
                 positions_accessor_idx,
+            );
+            map.insert(
+                Valid(gltf_json::mesh::Semantic::Normals),
+                normals_accessor_idx,
             );
             map
         },
@@ -410,6 +594,8 @@ fn write_glb(
         images,
         textures,
         materials,
+        samplers,
+        extensions_used: vec!["KHR_texture_transform".to_string()],
         ..Default::default()
     };
 
@@ -430,24 +616,10 @@ fn write_glb(
     eprintln!("Written to {}", path);
     Ok(())
 }
-fn run_output(path: &str) -> Result<()> {
-    let vertices = vec![
-        [0.0, 0.5, 0.0],
-        [-0.5, -0.5, 0.0],
-        [0.5, -0.5, 0.0],
-        [0.0, 0.0, 1.0],
-    ];
-    let indices: Vec<[u32; 3]> = vec![[0, 1, 2], [1, 2, 3]];
-    write_glb(&vertices, &indices, None, None, path)?;
-
-    Ok(())
-}
 fn main() -> Result<()> {
     let args: Args = argh::from_env();
     if let Some(path) = args.input {
         run_input(&path)
-    } else if let Some(path) = args.output {
-        run_output(&path)
     } else {
         Err(anyhow!("Run vacation --help for more information."))
     }
