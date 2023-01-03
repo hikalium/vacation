@@ -6,8 +6,10 @@ use anyhow::Context;
 use anyhow::Result;
 use argh::FromArgs;
 use gltf::buffer::Source;
+use gltf::Image;
 use gltf::Node;
 use gltf::Semantic;
+use gltf_json::image::MimeType;
 use gltf_json::validation::Checked::Valid;
 use std::assert_matches::assert_matches;
 use std::borrow::Cow;
@@ -33,6 +35,21 @@ fn parse_node(node: &Node, depth: usize) -> Result<()> {
         parse_node(&c, depth + 1)?;
     }
     Ok(())
+}
+
+fn extract_png_data_from_image(bin: &[u8], m: &Image) -> Result<Vec<u8>> {
+    println!(" Image #{}: name = {:?}", m.index(), m.name());
+    if let gltf::image::Source::View { view, mime_type } = m.source() {
+        println!("  source_type: {mime_type}",);
+        assert_eq!(mime_type, "image/png");
+        let buffer = view.buffer();
+        assert_matches!(buffer.source(), Source::Bin);
+        let offset = view.offset();
+        let length = view.length();
+        Ok(Vec::from(&bin[offset..(offset + length)]))
+    } else {
+        Err(anyhow!("Image not found in the Glb"))
+    }
 }
 
 fn run_input(path: &str) -> Result<()> {
@@ -68,10 +85,13 @@ fn run_input(path: &str) -> Result<()> {
                 p.material().pbr_metallic_roughness().base_color_texture(),
             ) {
                 println!(
-                    "Base Color Texture: tex_coord: {}, texture.index: {}",
+                    "Base Color Texture: tex_coord: {}, texture.index: {}, texture.source.index: {}",
                     bct.tex_coord(),
-                    bct.texture().index()
+                    bct.texture().index(),
+                    bct.texture().source().index(),
                 );
+                let png_data = extract_png_data_from_image(&bin, &bct.texture().source())
+                    .context("Failed to find a png image for a texture")?;
                 let vertices = {
                     assert_eq!(ap.dimensions(), gltf::accessor::Dimensions::Vec3);
                     assert_eq!(ap.data_type(), gltf::accessor::DataType::F32);
@@ -131,6 +151,7 @@ fn run_input(path: &str) -> Result<()> {
                 write_glb(
                     &vertices,
                     &indices,
+                    Some(&png_data),
                     Some([0f32, 0f32, pcount as f32 / 10.0]),
                     &path,
                 )?;
@@ -142,19 +163,11 @@ fn run_input(path: &str) -> Result<()> {
         println!(" Texture #{}: name = {:?}", t.index(), t.name());
     }
     for m in gltf.images() {
-        println!(" Image #{}: name = {:?}", m.index(), m.name());
-        if let gltf::image::Source::View { view, mime_type } = m.source() {
-            println!("  source_type: {mime_type}",);
-            assert_eq!(mime_type, "image/png");
-            let buffer = view.buffer();
-            assert_matches!(buffer.source(), Source::Bin);
-            let offset = view.offset();
-            let length = view.length();
-            let mut path = parts_dir.clone();
-            path.push(format!("i{}_{}.png", m.index(), m.name().unwrap_or("None"),));
-            let path = path.to_string_lossy().into_owned();
-            fs::write(path, &bin[offset..(offset + length)])?;
-        }
+        let png_data = extract_png_data_from_image(&bin, &m).context("Failed to get png data")?;
+        let mut path = parts_dir.clone();
+        path.push(format!("i{}_{}.png", m.index(), m.name().unwrap_or("None"),));
+        let path = path.to_string_lossy().into_owned();
+        fs::write(path, png_data)?;
     }
     Ok(())
 }
@@ -200,6 +213,7 @@ fn append_bytes<T>(bin: &mut Vec<u8>, src: &[T]) -> (u32, u32) {
 fn write_glb(
     vertices: &[[f32; 3]],
     indices: &[[u32; 3]],
+    png_data: Option<&[u8]>,
     translation: Option<[f32; 3]>,
     path: &str,
 ) -> Result<()> {
@@ -209,16 +223,13 @@ fn write_glb(
     let indices = indices.flatten();
     let (bin_indices_ofs, bin_indices_len) = append_bytes(&mut bin, indices);
 
-    let bin_size = bin.len() as u32;
-    let buffer = gltf_json::Buffer {
-        byte_length: bin_size,
-        extensions: Default::default(),
-        extras: Default::default(),
-        name: None,
-        uri: None,
-    };
+    //
+    // Buffer views
+    //
+    let mut buffer_views = Vec::new();
 
-    let vertex_buffer_view = gltf_json::buffer::View {
+    let vertex_buffer_view_idx = gltf_json::Index::new(buffer_views.len() as u32);
+    buffer_views.push(gltf_json::buffer::View {
         buffer: gltf_json::Index::new(0),
         byte_length: bin_vertices_len,
         byte_offset: Some(bin_vertices_ofs),
@@ -227,8 +238,10 @@ fn write_glb(
         extras: Default::default(),
         name: None,
         target: Some(Valid(gltf_json::buffer::Target::ArrayBuffer)),
-    };
-    let indices_buffer_view = gltf_json::buffer::View {
+    });
+
+    let indices_buffer_view_idx = gltf_json::Index::new(buffer_views.len() as u32);
+    buffer_views.push(gltf_json::buffer::View {
         buffer: gltf_json::Index::new(0),
         byte_length: bin_indices_len,
         byte_offset: Some(bin_indices_ofs),
@@ -237,11 +250,17 @@ fn write_glb(
         extras: Default::default(),
         name: None,
         target: Some(Valid(gltf_json::buffer::Target::ArrayBuffer)),
-    };
+    });
+
+    //
+    // Accessors
+    //
+    let mut accessors = Vec::new();
 
     let (min, max) = bounding_coords(vertices);
-    let positions = gltf_json::Accessor {
-        buffer_view: Some(gltf_json::Index::new(0)),
+    let positions_accessor_idx = gltf_json::Index::new(accessors.len() as u32);
+    accessors.push(gltf_json::Accessor {
+        buffer_view: Some(vertex_buffer_view_idx),
         byte_offset: 0,
         count: vertices.len() as u32,
         component_type: Valid(gltf_json::accessor::GenericComponentType(
@@ -255,9 +274,10 @@ fn write_glb(
         name: None,
         normalized: false,
         sparse: None,
-    };
-    let indices = gltf_json::Accessor {
-        buffer_view: Some(gltf_json::Index::new(1)),
+    });
+    let indices_accessor_idx = gltf_json::Index::new(accessors.len() as u32);
+    accessors.push(gltf_json::Accessor {
+        buffer_view: Some(indices_buffer_view_idx),
         byte_offset: 0,
         count: indices.len() as u32,
         component_type: Valid(gltf_json::accessor::GenericComponentType(
@@ -271,25 +291,81 @@ fn write_glb(
         name: None,
         normalized: false,
         sparse: None,
-    };
+    });
 
+    //
+    // Texture related objects
+    //
+    let mut images = Vec::new();
+    let mut textures = Vec::new();
+    let mut materials = Vec::new();
+    let material = if let Some(png_data) = png_data {
+        let (png_ofs, png_len) = append_bytes(&mut bin, png_data);
+        let png_buffer_view_idx = gltf_json::Index::new(buffer_views.len() as u32);
+        buffer_views.push(gltf_json::buffer::View {
+            buffer: gltf_json::Index::new(0),
+            byte_length: png_len,
+            byte_offset: Some(png_ofs),
+            byte_stride: None,
+            extensions: Default::default(),
+            extras: Default::default(),
+            name: None,
+            target: Some(Valid(gltf_json::buffer::Target::ArrayBuffer)),
+        });
+
+        let image_idx = gltf_json::Index::new(images.len() as u32);
+        images.push(gltf_json::image::Image {
+            name: None,
+            buffer_view: Some(png_buffer_view_idx),
+            mime_type: Some(MimeType("image/png".to_string())),
+            uri: None,
+            extensions: None,
+            extras: Default::default(),
+        });
+
+        let texture_idx = gltf_json::Index::new(textures.len() as u32);
+        textures.push(gltf_json::texture::Texture {
+            name: None,
+            sampler: None,
+            source: image_idx,
+            extensions: None,
+            extras: Default::default(),
+        });
+
+        let pbr_metallic_roughness = gltf_json::material::PbrMetallicRoughness {
+            base_color_texture: Some(gltf_json::texture::Info {
+                index: texture_idx,
+                tex_coord: 0,
+                extensions: None,
+                extras: Default::default(),
+            }),
+            ..Default::default()
+        };
+        let material_idx = Some(gltf_json::Index::new(materials.len() as u32));
+        materials.push(gltf_json::material::Material {
+            pbr_metallic_roughness,
+            ..Default::default()
+        });
+        material_idx
+    } else {
+        None
+    };
     let primitive = gltf_json::mesh::Primitive {
         attributes: {
             let mut map = std::collections::HashMap::new();
             map.insert(
                 Valid(gltf_json::mesh::Semantic::Positions),
-                gltf_json::Index::new(0),
+                positions_accessor_idx,
             );
             map
         },
         extensions: Default::default(),
         extras: Default::default(),
-        indices: Some(gltf_json::Index::new(1)),
-        material: None,
+        indices: Some(indices_accessor_idx),
+        material,
         mode: Valid(gltf_json::mesh::Mode::Triangles),
         targets: None,
     };
-
     let mesh = gltf_json::Mesh {
         extensions: Default::default(),
         extras: Default::default(),
@@ -297,7 +373,6 @@ fn write_glb(
         primitives: vec![primitive],
         weights: None,
     };
-
     let node = gltf_json::Node {
         camera: None,
         children: None,
@@ -312,11 +387,18 @@ fn write_glb(
         skin: None,
         weights: None,
     };
-
+    let bin_size = bin.len() as u32;
+    let buffer = gltf_json::Buffer {
+        byte_length: bin_size,
+        extensions: Default::default(),
+        extras: Default::default(),
+        name: None,
+        uri: None,
+    };
     let root = gltf_json::Root {
-        accessors: vec![positions, indices],
+        accessors,
         buffers: vec![buffer],
-        buffer_views: vec![vertex_buffer_view, indices_buffer_view],
+        buffer_views,
         meshes: vec![mesh],
         nodes: vec![node],
         scenes: vec![gltf_json::Scene {
@@ -325,6 +407,9 @@ fn write_glb(
             name: None,
             nodes: vec![gltf_json::Index::new(0)],
         }],
+        images,
+        textures,
+        materials,
         ..Default::default()
     };
 
@@ -353,7 +438,7 @@ fn run_output(path: &str) -> Result<()> {
         [0.0, 0.0, 1.0],
     ];
     let indices: Vec<[u32; 3]> = vec![[0, 1, 2], [1, 2, 3]];
-    write_glb(&vertices, &indices, None, path)?;
+    write_glb(&vertices, &indices, None, None, path)?;
 
     Ok(())
 }
